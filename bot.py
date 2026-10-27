@@ -124,7 +124,8 @@ group_cache_lock = threading.Lock()
 wait = 1  # 设置1秒查看一次是否有新消息
 
 # 获取程序根目录
-root_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
+            else os.path.dirname(os.path.abspath(__file__)))
 
 # 动态配置获取函数
 def get_dynamic_config(key, default_value=None):
@@ -2037,7 +2038,11 @@ def _schedule_restart(reason: str = "指令触发"):
                 except Exception:
                     pass
             logger.info(f"正在执行重启 (原因: {reason}) ...")
-            os.execv(sys.executable, ['python'] + sys.argv)
+            if getattr(sys, 'frozen', False):
+                restart_argv = [sys.executable] + sys.argv[1:]
+            else:
+                restart_argv = ['python'] + sys.argv
+            os.execv(sys.executable, restart_argv)
         except Exception as e:
             logger.error(f"执行重启失败: {e}", exc_info=True)
     threading.Timer(1.5, _do_restart).start()
@@ -4562,7 +4567,11 @@ def scheduled_restart_checker():
                     
                     logger.info("正在执行重启...")
                     # 替换当前进程为新启动的 Python 脚本实例
-                    os.execv(sys.executable, ['python'] + sys.argv)
+                    if getattr(sys, 'frozen', False):
+                        restart_argv = [sys.executable] + sys.argv[1:]
+                    else:
+                        restart_argv = ['python'] + sys.argv
+                    os.execv(sys.executable, restart_argv)
                 except Exception as e:
                     logger.error(f"执行重启操作时发生错误: {e}", exc_info=True)
                     # 如果重启失败，推迟下一次检查，避免短时间内连续尝试

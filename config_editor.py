@@ -43,11 +43,13 @@ import base64
 import mimetypes
 from datetime import datetime
 import zipfile
-
-app = Flask(__name__)
+import sys
 
 # ===== 统一的论坛数据目录 =====
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
+            else os.path.dirname(os.path.abspath(__file__)))
+app = Flask(__name__, template_folder=os.path.join(BASE_DIR, 'templates'))
+
 FORUM_DATA_DIR = os.path.join(BASE_DIR, 'forum_data')
 FORUM_AVATAR_DIR = os.path.join(FORUM_DATA_DIR, 'avatar')
 
@@ -218,7 +220,7 @@ bot_process = None
 # 全局日志队列
 log_queue = Queue()
 
-CHAT_CONTEXTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'chat_contexts.json')
+CHAT_CONTEXTS_FILE = os.path.join(BASE_DIR, 'chat_contexts.json')
 CHAT_CONTEXTS_LOCK_FILE = CHAT_CONTEXTS_FILE + '.lock'
 
 last_heartbeat_time = 0  # 上次收到心跳的时间戳
@@ -275,19 +277,21 @@ def start_bot():
     global bot_process
     if bot_process is None or bot_process.poll() is not None:
         # 如果目录下存在 user_timers.json 则删除
-        user_timers_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user_timers.json')
+        user_timers_path = os.path.join(BASE_DIR, 'user_timers.json')
         if os.path.exists(user_timers_path):
             try:
                 os.remove(user_timers_path)
             except Exception as e:
                 app.logger.warning(f"重置主动消息定时器失败: {e}")
 
-        bot_dir = os.path.dirname(os.path.abspath(__file__))
+        bot_dir = BASE_DIR
         
         bot_py = os.path.join(bot_dir, 'bot.py')
         bot_exe = os.path.join(bot_dir, 'bot.exe')
         
-        if os.path.exists(bot_py):
+        if getattr(sys, 'frozen', False):
+            cmd = [sys.executable, '--bot']
+        elif os.path.exists(bot_py):
             cmd = ['python', bot_py]
         elif os.path.exists(bot_exe):
             cmd = [bot_exe]
@@ -582,7 +586,7 @@ def submit_config():
         update_config(new_values_for_config_py)
         
         # 验证配置文件类型正确性
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        script_dir = BASE_DIR
         config_path = os.path.join(script_dir, 'config.py')
         validate_config_types(config_path)
 
@@ -688,7 +692,7 @@ def bot_heartbeat():
         return jsonify({'error': 'Failed to process heartbeat'}), 500
 
 def parse_config():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = BASE_DIR
     config_path = os.path.join(script_dir, 'config.py')
     config = {}
     try:
@@ -714,7 +718,7 @@ def update_config(new_values):
     """
     更新配置文件内容，确保文件写入安全性和原子性，避免文件被清空或损坏。
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = BASE_DIR
     config_path = os.path.join(script_dir, 'config.py')
     lock_path = config_path + '.lock'  # 文件锁路径
 
@@ -1005,7 +1009,7 @@ def index():
             update_config(new_values)
             
             # 验证配置文件类型正确性
-            script_dir = os.path.dirname(os.path.abspath(__file__))
+            script_dir = BASE_DIR
             config_path = os.path.join(script_dir, 'config.py')
             validate_config_types(config_path)
             
@@ -1287,7 +1291,7 @@ def read_chat_history():
         profile = profile[:max_chars]
 
     safe = re.sub(r'[\\/:*?"<>|]', '_', nickname)
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = BASE_DIR
     out_dir = os.path.join(script_dir, folder)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, safe + '.md')
@@ -1390,7 +1394,7 @@ def get_all_reminders():
     获取 JSON 文件中所有的提醒记录 (包括 recurring 和 one-off)。
     """
     try:
-        json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recurring_reminders.json')
+        json_path = os.path.join(BASE_DIR, 'recurring_reminders.json')
         if not os.path.exists(json_path):
             return jsonify([]) # 文件不存在则返回空列表
 
@@ -1421,7 +1425,7 @@ def save_all_reminders():
     验证后覆盖写入 recurring_reminders.json 文件。
     """
     try:
-        json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recurring_reminders.json')
+        json_path = os.path.join(BASE_DIR, 'recurring_reminders.json')
         # 获取前端提交的完整提醒列表
         reminders_data = request.get_json()
 
@@ -2209,7 +2213,7 @@ def get_core_memory_files():
     try:
         # 从配置中获取核心记忆目录
         config = parse_config()
-        core_memory_dir = os.path.join(os.path.dirname(__file__), config.get('CORE_MEMORY_DIR', 'CoreMemory'))
+        core_memory_dir = os.path.join(BASE_DIR, config.get('CORE_MEMORY_DIR', 'CoreMemory'))
         
         # 确保目录存在
         os.makedirs(core_memory_dir, exist_ok=True)
@@ -2262,7 +2266,7 @@ def get_core_memory(filename):
             return jsonify({'status': 'error', 'error': '无效的文件名'}), 400
             
         config = parse_config()
-        core_memory_dir = os.path.join(os.path.dirname(__file__), config.get('CORE_MEMORY_DIR', 'CoreMemory'))
+        core_memory_dir = os.path.join(BASE_DIR, config.get('CORE_MEMORY_DIR', 'CoreMemory'))
         file_path = os.path.join(core_memory_dir, filename)
         
         if not os.path.exists(file_path):
@@ -2324,7 +2328,7 @@ def save_core_memory(filename):
                 return jsonify({'status': 'error', 'message': f'第{i+1}个记忆片段的重要度必须是1-10的整数'}), 400
         
         config = parse_config()
-        core_memory_dir = os.path.join(os.path.dirname(__file__), config.get('CORE_MEMORY_DIR', 'CoreMemory'))
+        core_memory_dir = os.path.join(BASE_DIR, config.get('CORE_MEMORY_DIR', 'CoreMemory'))
         os.makedirs(core_memory_dir, exist_ok=True)
         
         file_path = os.path.join(core_memory_dir, filename)
@@ -2350,7 +2354,7 @@ def delete_core_memory(filename):
             return jsonify({'status': 'error', 'message': '无效的文件名'}), 400
             
         config = parse_config()
-        core_memory_dir = os.path.join(os.path.dirname(__file__), config.get('CORE_MEMORY_DIR', 'CoreMemory'))
+        core_memory_dir = os.path.join(BASE_DIR, config.get('CORE_MEMORY_DIR', 'CoreMemory'))
         file_path = os.path.join(core_memory_dir, filename)
         
         if not os.path.exists(file_path):
@@ -3846,7 +3850,7 @@ def get_default_config():
 
 def validate_config():
     """验证config.py配置完整性，若有缺失项则自动补充默认值"""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = BASE_DIR
     config_path = os.path.join(script_dir, 'config.py')
     
     try:
@@ -3989,7 +3993,7 @@ if __name__ == '__main__':
 
 
     # 配置文件存在检查
-    config_path = os.path.join(os.path.dirname(__file__), 'config.py')
+    config_path = os.path.join(BASE_DIR, 'config.py')
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"核心配置文件缺失: {config_path}")
     
@@ -4032,4 +4036,3 @@ if __name__ == '__main__':
     # 根据配置决定绑定地址
     #host = "0.0.0.0" if config.get('ENABLE_LOGIN_PASSWORD', False) else "127.0.0.1"
     app.run(host= "127.0.0.1", debug=False, port=PORT)
-    

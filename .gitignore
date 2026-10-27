@@ -13,6 +13,7 @@ dist/
 .venv/
 venv/
 .smoke-venv/
+.build-venv/
 
 # 离线依赖缓存（第三方 wheel，不纳入版本控制）
 libs/

@@ -32,6 +32,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 import os
 import ctypes
+from http.server import BaseHTTPRequestHandler, HTTPServer
 os.environ["PROJECT_NAME"] = 'iwyxdxl/WeChatBot_WXAUTO_SE'
 # 消息收发由 wxbot 兼容层驱动（wechatauto，适配微信 4.x 自绘渲染）
 from wxbot import WeChat, is_wechat_asset_url
@@ -448,6 +449,36 @@ console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
+class _BridgeServer(HTTPServer):
+    daemon_threads = True
+
+class _BridgeHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_): pass
+    def do_POST(self):
+        if self.path != '/send' or self.headers.get('Authorization') != 'Bearer ' + os.environ.get('WECHATBOT_BRIDGE_TOKEN', ''):
+            self.send_error(401); return
+        try:
+            body = json.loads(self.rfile.read(min(int(self.headers.get('Content-Length', '0')), 15 * 1024 * 1024)))
+            if body['action'] == 'text': ok = bool(wx.SendMsg(msg=body['content'], who=body['target']))
+            elif body['action'] == 'image': ok = bool(wx.SendFiles(filepath=body['content'], who=body['target']))
+            else: raise ValueError('invalid action')
+            payload = json.dumps({'ok': ok}).encode()
+            self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(payload))); self.end_headers(); self.wfile.write(payload)
+        except Exception as exc:
+            logger.exception('Webhook bridge send failed: %s', exc)
+            self.send_error(400)
+
+def start_bridge_server():
+    token = os.environ.get('WECHATBOT_BRIDGE_TOKEN')
+    if not token: return
+    try:
+        port = int(os.environ.get('WECHATBOT_BRIDGE_PORT', '51387'))
+        server = _BridgeServer(('127.0.0.1', port), _BridgeHandler)
+    except (OSError, ValueError) as exc:
+        logger.error('Webhook bridge could not bind its local port; bot remains running: %s', exc)
+        return
+    threading.Thread(target=server.serve_forever, name='WebhookBridge', daemon=True).start()
+
 # 获取微信窗口对象
 try:
     logger.info("\033[32m正在初始化微信接口...\033[0m")
@@ -475,7 +506,7 @@ except Exception as e:
     logger.error(f"\033[90m   → 下载地址: https://www.123865.com/s/BvG0Vv-jmvXh\033[0m")
     logger.error("")
     logger.error("\033[31m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m")
-    exit(1)
+    raise SystemExit(1)
 # 获取登录用户的名字
 ROBOT_WX_NAME = wx.nickname
 
@@ -4761,13 +4792,13 @@ def main():
         for user_name in user_names:
             if user_name == ROBOT_WX_NAME:
                 logger.error(f"\033[31m您填写的用户列表中包含自己登录的微信昵称，请删除后再试！\033[0m")
-                exit(1)
+                raise SystemExit(1)
             ListenChat = wx.AddListenChat(nickname=user_name, callback=message_listener)
             if ListenChat:
                 logger.info(f"成功添加监听用户{ListenChat}")
             else:
                 logger.error(f"\033[31m添加监听用户{user_name}失败，请确保您在用户列表填写的微信昵称/备注与实际完全匹配，并且不要包含表情符号和特殊符号，注意填写的不是自己登录的微信昵称!\033[0m")
-                exit(1)
+                raise SystemExit(1)
         logger.info("监听用户添加完成")
 
         # 挂上防撤回（镜像 + 媒体备份，纯读库、只写自己的镜像目录，不驱动界面）
@@ -4869,6 +4900,7 @@ def main():
         heartbeat_th.start()
 
         logger.info("\033[32mBOT已成功启动并运行中...\033[0m")
+        start_bridge_server()
 
         # 启动内存使用监控线程
         monitor_memory_usage_thread = threading.Thread(target=monitor_memory_usage, name="MemoryUsageMonitor")

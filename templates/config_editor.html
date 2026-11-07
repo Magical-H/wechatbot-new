@@ -3728,6 +3728,7 @@
         <div class="header-title"><h1>WeChatBot配置编辑器 v2.1.6- bot完全免费，倒卖死全家  目前已支持4.1.12.55版本微信</h1></div>
         <div class="buttons">
             <button id="botButton" class="nav-button">Start Bot</button>
+            <button type="button" class="nav-button" onclick="document.getElementById('webhookPanel').hidden=false">Webhook 网关与发送测试</button>
             <button type="submit" form="configForm" id="saveConfigButton" class="nav-button" style="background-color: #4CAF50;">保存配置</button>
             <button type="button" id="importButton" class="nav-button" style="background-color: #2196F3;">导入配置</button>      
             <a href="/bzwd"
@@ -3748,6 +3749,27 @@ document.getElementById('oneKeyDiagnosticButton').addEventListener('click', asyn
 </script>
         </div>
     </div>
+    <section id="webhookPanel" hidden style="position:fixed;z-index:9999;inset:12% 15%;overflow:auto;background:white;border:1px solid #bbb;border-radius:8px;padding:24px;box-shadow:0 8px 30px #0004">
+      <button type="button" onclick="document.getElementById('webhookPanel').hidden=true" style="float:right">关闭面板</button>
+      <h2>Webhook 网关</h2>
+      <label>Token <input id="webhookToken" type="password" readonly style="width:55%"></label>
+      <button type="button" onclick="document.getElementById('webhookToken').type=document.getElementById('webhookToken').type==='password'?'text':'password'">查看/遮蔽</button>
+      <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('webhookToken').value)">复制</button>
+      <button type="button" onclick="webhookSave({generate:true})">随机生成</button>
+      <button type="button" onclick="webhookSave({reset:true})">重置 Token</button><br><br>
+      <label>API 端口 <input id="webhookPort" type="number" min="1024" max="65535" value="5001"></label>
+      <label><input id="webhookLan" type="checkbox" checked>允许局域网访问</label>
+      <label><input id="webhookEnabled" type="checkbox">启用 API 网关</label>
+      <button type="button" onclick="webhookSave({enabled:document.getElementById('webhookEnabled').checked,port:Number(document.getElementById('webhookPort').value),lan:document.getElementById('webhookLan').checked})">保存网关设置</button>
+      <h2>主动发送测试</h2>
+      <form id="webhookTestForm" enctype="multipart/form-data"><label>目标联系人 <input name="target" required></label><br><label>文本 <textarea name="text"></textarea></label><br><label>图片文件 <input name="image" type="file" accept="image/*"></label><br><label>或图片 URL <input name="image_url" type="url"></label><br><button>发送测试</button></form>
+      <pre id="webhookResult"></pre>
+    </section>
+    <script>
+    async function webhookLoad(){const r=await fetch('/webhook/settings');if(!r.ok)return;const d=await r.json();document.getElementById('webhookToken').value=d.token||'';document.getElementById('webhookEnabled').checked=!!d.enabled;document.getElementById('webhookPort').value=d.port||5001;document.getElementById('webhookLan').checked=d.lan!==false}
+    async function webhookSave(data){const r=await fetch('/webhook/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const d=await r.json();document.getElementById('webhookResult').textContent=d.error||'设置已保存';if(r.ok)webhookLoad()}
+    document.getElementById('webhookTestForm').addEventListener('submit',async e=>{e.preventDefault();const r=await fetch('/webhook/test',{method:'POST',body:new FormData(e.target)});document.getElementById('webhookResult').textContent=JSON.stringify(await r.json())});webhookLoad();
+    </script>
     <div id="sidebarOverlay"></div>
 
     <div class="main-container">

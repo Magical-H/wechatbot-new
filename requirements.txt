@@ -7,6 +7,7 @@ wechatauto-replica[guia]>=1.2.4.4
 # ==================== Web UI ====================
 flask
 werkzeug
+waitress
 
 # ==================== AI / LLM ====================
 openai==1.84.0

@@ -29,19 +29,22 @@ pypinyin）已由 wechatauto-replica 自动带入，不再在 requirements.txt
    - 许可证：BSD 3-Clause License (GPL-3.0兼容)
    - 用途：Web UI框架
 
-3. OpenAI (Apache License 2.0)
+3. Waitress (ZPL 2.1 License)
+   - 用途：Webhook API 的独立 WSGI 服务
+
+4. OpenAI (Apache License 2.0)
    - 许可证：Apache License 2.0 (GPL-3.0兼容)
    - 用途：AI模型接口
 
-4. Requests (Apache License 2.0)
+5. Requests (Apache License 2.0)
    - 许可证：Apache License 2.0 (GPL-3.0兼容)
    - 用途：HTTP请求库
 
-5. BeautifulSoup4 (MIT License)
+6. BeautifulSoup4 (MIT License)
    - 许可证：MIT License (GPL-3.0兼容)
    - 用途：HTML解析
 
-6. psutil (BSD License)
+7. psutil (BSD License)
    - 许可证：BSD 3-Clause License (GPL-3.0兼容)
    - 用途：系统进程监控
 

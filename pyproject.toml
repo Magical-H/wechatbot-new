@@ -29,6 +29,7 @@ dependencies = [
     "wechatauto-replica[guia]>=1.2.4.4",
     "flask",
     "werkzeug",
+    "waitress",
     "openai==1.84.0",
     "psutil",
     "filelock",
@@ -48,7 +49,7 @@ wechatbot = "bot:main"
 wechatbot-webui = "config_editor:main"
 
 [tool.setuptools]
-py-modules = ["bot", "config", "config_editor", "run", "test_bot", "test_wxbot", "wxbot"]
+py-modules = ["bot", "config", "config_editor", "run", "test_bot", "test_wxbot", "wxbot", "webhook_gateway"]
 include-package-data = true
 
 [tool.setuptools.packages.find]

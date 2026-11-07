@@ -85,6 +85,22 @@
 2. 申请大模型API,推荐WeAPIs https://vg.v1api.cc/register?aff=WnGO
 
 # 快速上手
+
+## Webhook 网关与主动发送
+
+管理页顶部的“Webhook 网关与发送测试”面板可以生成或重置 Bearer Token、启停 API 网关，并对目标联系人发送文本或图片。API 网关默认关闭，默认端口为 5001；启用局域网访问后监听 `0.0.0.0`。管理页仍只监听本机。公网调用应由部署侧反向代理提供 HTTPS。
+
+API 示例：
+
+```http
+POST /api/v1/messages
+Authorization: Bearer <管理页生成的 Token>
+Content-Type: application/json
+
+{"target":"联系人名称","text":"测试消息"}
+```
+
+`POST /api/v1/images` 接受 `{ "target": "联系人名称", "image_url": "https://..." }` 或 `{ "target": "联系人名称", "image_base64": "..." }`。图片最多 10 MiB，支持 PNG/JPG/JPEG/GIF/BMP/WEBP；图片 URL 只允许解析到公网地址。其余路由为 `GET /api/v1/health`、`GET /api/v1/bot/status`、`POST /api/v1/bot/start` 和 `POST /api/v1/bot/stop`。所有 API 请求均需使用 `Authorization: Bearer <token>`。
 1. 登录电脑微信，确保在后台运行
 2. 运行 Run.exe 启动程序，等待自动安装依赖文件（Run.exe 会自动检查 Python 和 pip 环境并安装所需依赖，不检查微信版本）
 3. 在打开的网页中修改配置文件，选择您的API服务提供商、模型，并填入您的API KEY

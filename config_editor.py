@@ -44,6 +44,12 @@ import mimetypes
 from datetime import datetime
 import zipfile
 import sys
+import secrets
+import threading
+import http.client
+import urllib.error
+import urllib.request
+from webhook_gateway import Gateway, create_app
 
 # ===== 统一的论坛数据目录 =====
 BASE_DIR = (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
@@ -226,6 +232,55 @@ CHAT_CONTEXTS_LOCK_FILE = CHAT_CONTEXTS_FILE + '.lock'
 last_heartbeat_time = 0  # 上次收到心跳的时间戳
 HEARTBEAT_TIMEOUT = 15   # 心跳超时阈值（秒），应大于 bot.py 的 HEARTBEAT_INTERVAL
 current_bot_pid = None
+WEBHOOK_CONFIG = os.path.join(BASE_DIR, 'webhook_gateway.json')
+gateway_server = None
+bridge_token = secrets.token_urlsafe(32)
+bridge_port = 51387
+
+def webhook_settings():
+    try:
+        with open(WEBHOOK_CONFIG, 'r', encoding='utf-8') as f: return json.load(f)
+    except Exception: return {'enabled': False, 'token': '', 'port': 5001, 'lan': True}
+
+def save_webhook_settings(value):
+    tmp = WEBHOOK_CONFIG + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f: json.dump(value, f)
+    os.replace(tmp, WEBHOOK_CONFIG)
+
+def bridge_call(action, target, content):
+    connection = http.client.HTTPConnection('127.0.0.1', bridge_port, timeout=60)
+    try:
+        payload = json.dumps({'action': action, 'target': target, 'content': content}).encode()
+        connection.request('POST', '/send', body=payload,
+             headers={'Content-Type':'application/json','Authorization':'Bearer '+bridge_token})
+        response = connection.getresponse()
+        if response.status >= 400: raise RuntimeError(f'bot bridge returned HTTP {response.status}')
+        return json.loads(response.read()).get('ok')
+    except RuntimeError:
+        raise
+    except Exception as exc: raise ConnectionError from exc
+    finally: connection.close()
+
+def refresh_gateway():
+    global gateway_server
+    settings = webhook_settings()
+    if gateway_server:
+        gateway_server.stop(); gateway_server = None
+    if settings.get('enabled') and settings.get('token'):
+        try:
+            host = '0.0.0.0' if settings.get('lan', True) else '127.0.0.1'
+            management_port = int(parse_config().get('PORT', 5000))
+            gateway_server = Gateway(create_app(settings['token'], bridge_call, management_port),
+                                     host, int(settings.get('port', 5001)))
+        except (OSError, ValueError) as exc:
+            gateway_server = None
+            settings['enabled'] = False
+            save_webhook_settings(settings)
+            app.logger.error('Webhook API could not bind its port; gateway disabled: %s', exc)
+            return False
+        gateway_server.start()
+    return True
+
 
 def get_chat_context_users():
     """从 chat_contexts.json 读取用户列表 (即顶级键)"""
@@ -272,6 +327,55 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+@app.route('/webhook/settings', methods=['GET','POST'])
+@login_required
+def webhook_settings_route():
+    current = webhook_settings()
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        if data.get('generate') or data.get('reset'): current['token'] = secrets.token_urlsafe(32)
+        if 'enabled' in data:
+            if data['enabled'] and not current.get('token'): return jsonify(error='请先生成 Token'), 400
+            current['enabled'] = bool(data['enabled'])
+        if 'port' in data:
+            try: port = int(data['port'])
+            except (TypeError, ValueError): return jsonify(error='端口必须为数字'), 400
+            if not 1024 <= port <= 65535: return jsonify(error='端口范围为 1024-65535'), 400
+            current['port'] = port
+        if 'lan' in data: current['lan'] = bool(data['lan'])
+        save_webhook_settings(current)
+        if not refresh_gateway(): return jsonify(error='Webhook API 端口绑定失败，网关已关闭'), 503
+    return jsonify({**current, 'token': current.get('token','')})
+
+@app.route('/webhook/test', methods=['POST'])
+@login_required
+def webhook_test():
+    target = request.form.get('target','').strip(); text = request.form.get('text','')
+    if not target: return jsonify(error='请填写目标联系人'), 400
+    image_url = request.form.get('image_url','').strip(); image = request.files.get('image')
+    if image_url or (image and image.filename):
+        from webhook_gateway import MAX_IMAGE, download_image, validate_image
+        fd, path = tempfile.mkstemp(prefix='wechatbot-test-'); os.close(fd)
+        try:
+            if image_url: download_image(image_url, path)
+            else:
+                raw = image.stream.read(MAX_IMAGE + 1)
+                if len(raw) > MAX_IMAGE: return jsonify(error='图片超过 10 MiB'), 413
+                with open(path, 'wb') as f: f.write(raw)
+                validate_image(path)
+            ok = bridge_call('image', target, path)
+        except OverflowError as exc:
+            return jsonify(error=str(exc)), 413
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        except requests.RequestException:
+            return jsonify(error='图片下载失败或超时'), 400
+        finally:
+            try: os.unlink(path)
+            except OSError: pass
+    else: ok = bridge_call('text', target, text)
+    return (jsonify(status='sent'), 200) if ok else (jsonify(error='发送失败'), 502)
+
 @app.route('/start_bot', methods=['POST'])
 def start_bot():
     global bot_process
@@ -299,8 +403,12 @@ def start_bot():
             return {'error': 'No bot executable found'}, 404
 
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
+        child_env = os.environ.copy()
+        child_env['WECHATBOT_BRIDGE_TOKEN'] = bridge_token
+        child_env['WECHATBOT_BRIDGE_PORT'] = str(bridge_port)
         bot_process = subprocess.Popen(
             cmd,
+            env=child_env,
             creationflags=creation_flags
         )
     return {'status': 'started'}, 200
@@ -4035,4 +4143,5 @@ if __name__ == '__main__':
 
     # 根据配置决定绑定地址
     #host = "0.0.0.0" if config.get('ENABLE_LOGIN_PASSWORD', False) else "127.0.0.1"
+    refresh_gateway()
     app.run(host= "127.0.0.1", debug=False, port=PORT)

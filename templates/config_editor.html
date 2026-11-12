@@ -196,6 +196,61 @@
             display: block;
         }
 
+        #section-contact-windows.active-panel {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 140px);
+            min-height: 300px;
+            margin-bottom: 0;
+            overflow: hidden;
+            box-sizing: border-box;
+        }
+        .contact-window-heading, .contact-window-toolbar, .contact-window-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        .contact-window-heading h2 { margin-bottom: 8px; }
+        .contact-window-heading p { margin: 0 0 14px; color: #667085; }
+        .contact-window-toolbar { margin: 4px 0 12px; }
+        .contact-window-toolbar input {
+            flex: 1;
+            min-width: 150px;
+            padding: 10px 12px;
+            border: 1px solid #d0d5dd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .contact-window-tabs { display: flex; gap: 8px; overflow-x: auto; flex-shrink: 0; padding-bottom: 10px; }
+        .contact-window-tabs button { background: #f2f4f7; color: #344054; border: 1px solid #e4e7ec; padding: 8px 12px; }
+        .contact-window-tabs button.active { background: #e8f5e9; border-color: #78c27d; color: #247a2c; }
+        .contact-window-list {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            border: 1px solid #e4e7ec;
+            border-radius: 8px;
+            background: #fff;
+        }
+        .contact-window-row { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-bottom: 1px solid #f0f1f3; }
+        .contact-window-row:last-child { border-bottom: 0; }
+        .contact-window-row input { width: 17px; height: 17px; flex-shrink: 0; }
+        .contact-window-row-main { flex: 1; min-width: 0; }
+        .contact-window-row-name { font-weight: 600; color: #202939; overflow-wrap: anywhere; }
+        .contact-window-row-meta { margin-top: 3px; color: #667085; font-size: 12px; overflow-wrap: anywhere; }
+        .contact-window-row-state { flex-shrink: 0; color: #667085; font-size: 12px; text-align: right; }
+        .contact-window-footer { padding-top: 12px; }
+        .contact-window-footer small { display: block; margin-top: 4px; color: #667085; }
+        #contactWindowSaveStatus { margin-top: 4px; color: #475467; }
+        .contact-window-empty { padding: 28px 16px; text-align: center; color: #667085; }
+        @media (max-width: 768px) {
+            #section-contact-windows.active-panel { height: calc(100vh - 92px); min-height: 260px; padding: 16px; }
+            .contact-window-heading, .contact-window-footer { align-items: flex-start; flex-direction: column; }
+            .contact-window-row-state { max-width: 100px; }
+        }
+
         .peek-content {
             padding: 20px;
         }
@@ -3777,6 +3832,7 @@ document.getElementById('oneKeyDiagnosticButton').addEventListener('click', asyn
         <nav class="sidebar">
             <ul>
                 <li><a href="#" data-target="section-user-list">用户列表</a></li>
+                <li><a href="#" data-target="section-contact-windows">联系人独立窗口</a></li>
                 <li><a href="#" data-target="section-prompt-management">Prompt管理</a></li>
                 <li><a href="#" data-target="section-chat-model">Chat 模型配置</a></li>
                 <li><a href="#" data-target="section-image-recognition">图片/表情包识别</a></li>
@@ -3868,6 +3924,38 @@ document.getElementById('oneKeyDiagnosticButton').addEventListener('click', asyn
                         <input type="number" step="200" min="500" id="CONTEXT_MAX_CHARS_input" name="CONTEXT_MAX_CHARS" value="{{ config.CONTEXT_MAX_CHARS or 2500 }}">
                     </div>
                     <small>提示：修改了用户对应的Prompt文件后保存配置时将自动清除该用户的上下文记忆。</small>
+                </div>
+
+                <div id="section-contact-windows" class="content-panel">
+                    <div class="contact-window-heading">
+                        <div>
+                            <h2>联系人独立窗口</h2>
+                            <p>选中的联系人首次发送时才打开独立窗口；保存后重启 Bot 生效。</p>
+                        </div>
+                        <div id="contactWindowSummary" aria-live="polite">正在读取联系人…</div>
+                    </div>
+                    <div class="contact-window-toolbar">
+                        <input id="contactWindowSearch" type="search" placeholder="搜索昵称、备注、微信号或 username">
+                        <button id="contactWindowRefresh" type="button">刷新联系人</button>
+                    </div>
+                    <div class="contact-window-tabs" role="tablist" aria-label="联系人分类">
+                        <button type="button" data-category="bound" role="tab">已绑定</button>
+                        <button type="button" class="active" data-category="all" role="tab">全部</button>
+                        <button type="button" data-category="groups" role="tab">群聊</button>
+                        <button type="button" data-category="official" role="tab">公众号 / 服务号</button>
+                        <button type="button" data-category="enterprise" role="tab">企业微信</button>
+                        <button type="button" data-category="personal" role="tab">个人</button>
+                        <button type="button" data-category="special" role="tab">系统 / 特殊账号</button>
+                        <button type="button" data-category="other" role="tab">其他格式</button>
+                    </div>
+                    <div id="contactWindowList" class="contact-window-list" role="list" aria-live="polite"></div>
+                    <div class="contact-window-footer">
+                        <div>
+                            <strong id="contactWindowSelectionCount">已选 0 人</strong>
+                            <div id="contactWindowSaveStatus" aria-live="polite"></div>
+                        </div>
+                        <button id="contactWindowSave" type="button">保存绑定名单</button>
+                    </div>
                 </div>
 
                 <div id="section-fun-lab" class="content-panel">
@@ -5275,5 +5363,177 @@ document.getElementById('oneKeyDiagnosticButton').addEventListener('click', asyn
 
     </script>
 
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const list = document.getElementById('contactWindowList');
+    if (!list) return;
+
+    const labels = {bound: '已绑定', all: '全部', groups: '群聊', official: '公众号 / 服务号', enterprise: '企业微信联系人', personal: '个人联系人', special: '系统 / 特殊账号', other: '其他格式'};
+    const runtimeLabels = {bound: '独立窗口已验证', stale: '窗口句柄失效', binding_failed: '最近绑定失败', main_fallback: '最近一次走主窗口', not_bound: '首次发送时绑定'};
+    const search = document.getElementById('contactWindowSearch');
+    const summary = document.getElementById('contactWindowSummary');
+    const selectionCount = document.getElementById('contactWindowSelectionCount');
+    const saveStatus = document.getElementById('contactWindowSaveStatus');
+    const saveButton = document.getElementById('contactWindowSave');
+    let contacts = [];
+    let saved = new Set();
+    let selected = new Set();
+    let runtimeConfig = new Set();
+    let runtimeContacts = {};
+    let runtimeAvailable = false;
+    let botRunning = false;
+    let activeCategory = 'all';
+    let initialized = false;
+    let searchTimer;
+
+    function sameSet(left, right) {
+        return left.size === right.size && [...left].every(value => right.has(value));
+    }
+
+    function updateStatus() {
+        const dirty = !sameSet(selected, saved);
+        selectionCount.textContent = `已选 ${selected.size} 人`;
+        if (dirty) saveStatus.textContent = '有未保存的名单变更。';
+        else if (!botRunning) saveStatus.textContent = '名单已保存；Bot 未运行。';
+        else if (!runtimeAvailable) saveStatus.textContent = 'Bot 已启动，正在同步运行状态。';
+        else if (!sameSet(saved, runtimeConfig)) saveStatus.textContent = '名单已保存，重启 Bot 后生效。';
+        else saveStatus.textContent = '已保存名单与 Bot 当前加载配置一致。';
+
+        saveButton.disabled = !dirty;
+    }
+
+    function rowRuntimeText(username) {
+        if (!botRunning) return 'Bot 未运行';
+        if (!runtimeAvailable) return '正在同步 Bot 状态';
+        const state = runtimeContacts[username]?.status;
+        if (state) return runtimeLabels[state] || state;
+        if (!runtimeConfig.has(username)) return '重启 Bot 后加载';
+        return runtimeLabels.not_bound;
+    }
+
+    function render() {
+        const counts = Object.fromEntries(Object.keys(labels).map(key => [key, contacts.filter(item => item.category === key).length]));
+        counts.bound = contacts.filter(item => saved.has(item.username)).length;
+        counts.all = contacts.length;
+        document.querySelectorAll('.contact-window-tabs button').forEach(button => {
+            const category = button.dataset.category;
+            button.classList.toggle('active', category === activeCategory);
+            button.setAttribute('aria-selected', category === activeCategory ? 'true' : 'false');
+            button.textContent = `${labels[category]} (${counts[category] || 0})`;
+        });
+        summary.textContent = `当前结果 ${counts.all} 人 · 已保存 ${saved.size} 人`;
+        list.replaceChildren();
+        const visible = activeCategory === 'bound'
+            ? contacts.filter(item => saved.has(item.username))
+            : activeCategory === 'all' ? contacts : contacts.filter(item => item.category === activeCategory);
+        if (!visible.length) {
+            const empty = document.createElement('div');
+            empty.className = 'contact-window-empty';
+            empty.textContent = '没有匹配的联系人';
+            list.append(empty);
+        }
+        for (const contact of visible) {
+            const label = document.createElement('label');
+            label.className = 'contact-window-row';
+            label.setAttribute('role', 'listitem');
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = selected.has(contact.username);
+            checkbox.addEventListener('change', () => {
+                if (checkbox.checked) selected.add(contact.username);
+                else selected.delete(contact.username);
+                updateStatus();
+            });
+            const main = document.createElement('span');
+            main.className = 'contact-window-row-main';
+            const name = document.createElement('span');
+            name.className = 'contact-window-row-name';
+            name.textContent = contact.remark || contact.nick_name || contact.username;
+            const meta = document.createElement('span');
+            meta.className = 'contact-window-row-meta';
+            meta.textContent = [contact.remark && contact.nick_name && contact.remark !== contact.nick_name ? `昵称：${contact.nick_name}` : '', contact.alias ? `微信号：${contact.alias}` : '', `username：${contact.username}`].filter(Boolean).join(' · ');
+            main.append(name, meta);
+            label.append(checkbox, main);
+            if (activeCategory === 'bound') {
+                const state = document.createElement('span');
+                state.className = 'contact-window-row-state';
+                state.textContent = rowRuntimeText(contact.username);
+                label.append(state);
+            }
+            list.append(label);
+        }
+        updateStatus();
+    }
+
+    async function loadContacts() {
+        summary.textContent = '正在读取联系人…';
+        const response = await fetch(`/api/contact-windows?q=${encodeURIComponent(search.value.trim())}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '读取联系人失败');
+        contacts = data.contacts || [];
+        saved = new Set(data.usernames || []);
+        if (!initialized) {
+            selected = new Set(saved);
+            initialized = true;
+        }
+        botRunning = Boolean(data.bot_running);
+        runtimeAvailable = Boolean(data.runtime);
+        runtimeConfig = new Set(data.runtime?.configured_usernames || []);
+        runtimeContacts = data.runtime?.contacts || {};
+        render();
+    }
+
+    async function refreshRuntimeStatus() {
+        const response = await fetch('/api/contact-windows/runtime');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '读取 Bot 状态失败');
+        botRunning = Boolean(data.bot_running);
+        runtimeAvailable = Boolean(data.runtime);
+        runtimeConfig = new Set(data.runtime?.configured_usernames || []);
+        runtimeContacts = data.runtime?.contacts || {};
+        render();
+    }
+
+    document.querySelectorAll('.contact-window-tabs button').forEach(button => button.addEventListener('click', () => {
+        activeCategory = button.dataset.category;
+        render();
+        if (activeCategory === 'bound') refreshRuntimeStatus().catch(() => {});
+    }));
+    search.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => loadContacts().catch(error => { list.textContent = error.message; }), 250);
+    });
+    document.getElementById('contactWindowRefresh').addEventListener('click', () => loadContacts().catch(error => { list.textContent = error.message; }));
+    saveButton.addEventListener('click', async () => {
+        saveButton.disabled = true;
+        saveStatus.textContent = '正在保存…';
+        try {
+            const response = await fetch('/api/contact-windows', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({usernames: [...selected].sort()})
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || '保存失败');
+            saved = new Set(data.usernames || []);
+            selected = new Set(saved);
+            botRunning = Boolean(data.bot_running);
+            runtimeAvailable = Boolean(data.runtime_available);
+            runtimeConfig = new Set(data.runtime?.configured_usernames || []);
+            runtimeContacts = data.runtime?.contacts || {};
+            render();
+        } catch (error) {
+            saveStatus.textContent = error.message;
+            saveButton.disabled = false;
+        }
+    });
+    window.setInterval(() => {
+        if (activeCategory === 'bound' && document.visibilityState === 'visible') {
+            refreshRuntimeStatus().catch(() => {});
+        }
+    }, 3000);
+    loadContacts().catch(error => { summary.textContent = error.message; list.textContent = error.message; });
+});
+</script>
 </body>
 </html>

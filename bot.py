@@ -459,11 +459,15 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             self.send_error(401); return
         try:
             body = json.loads(self.rfile.read(min(int(self.headers.get('Content-Length', '0')), 15 * 1024 * 1024)))
+            result = None
             if body['action'] == 'open': ok = bool(wx.ChatWith(body['target']))
             elif body['action'] == 'text': ok = bool(wx.SendMsg(msg=body['content'], who=body['target']))
             elif body['action'] == 'image': ok = bool(wx.SendFiles(filepath=body['content'], who=body['target']))
+            elif body['action'] == 'contact_window_status':
+                result = wx.get_contact_window_status()
+                ok = True
             else: raise ValueError('invalid action')
-            payload = json.dumps({'ok': ok}).encode()
+            payload = json.dumps({'ok': ok, 'result': result}).encode()
             self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(payload))); self.end_headers(); self.wfile.write(payload)
         except Exception as exc:
             logger.exception('Webhook bridge action failed: %s', exc)

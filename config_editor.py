@@ -23,6 +23,7 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, s
 import re
 import ast
 import os
+import sqlite3
 import subprocess
 import psutil
 import openai
@@ -50,6 +51,11 @@ import http.client
 import urllib.error
 import urllib.request
 from webhook_gateway import Gateway, create_app
+from contact_window_config import (
+    classify_contact_username,
+    load_contact_window_usernames,
+    save_contact_window_usernames,
+)
 
 # ===== 统一的论坛数据目录 =====
 BASE_DIR = (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
@@ -248,18 +254,68 @@ def save_webhook_settings(value):
     os.replace(tmp, WEBHOOK_CONFIG)
 
 def bridge_call(action, target, content):
-    connection = http.client.HTTPConnection('127.0.0.1', bridge_port, timeout=60)
+    return bridge_request(action, target, content).get('ok')
+
+def bridge_request(action, target='', content='', timeout=60):
+    connection = http.client.HTTPConnection('127.0.0.1', bridge_port, timeout=timeout)
     try:
         payload = json.dumps({'action': action, 'target': target, 'content': content}).encode()
         connection.request('POST', '/send', body=payload,
              headers={'Content-Type':'application/json','Authorization':'Bearer '+bridge_token})
         response = connection.getresponse()
         if response.status >= 400: raise RuntimeError(f'bot bridge returned HTTP {response.status}')
-        return json.loads(response.read()).get('ok')
+        return json.loads(response.read())
     except RuntimeError:
         raise
     except Exception as exc: raise ConnectionError from exc
     finally: connection.close()
+
+def _contact_window_contacts(keyword=''):
+    from wechatauto.db import WeChatDB
+
+    connection = WeChatDB()._contact_conn()
+    if connection is None:
+        raise RuntimeError('微信联系人数据库不可用')
+    try:
+        if keyword:
+            pattern = f'%{keyword}%'
+            rows = connection.execute(
+                "SELECT username, nick_name, remark, alias FROM contact "
+                "WHERE COALESCE(username, '') <> '' AND "
+                "(nick_name LIKE ? OR remark LIKE ? OR alias LIKE ? OR username LIKE ?) "
+                "ORDER BY COALESCE(NULLIF(remark, ''), NULLIF(nick_name, ''), username)",
+                (pattern, pattern, pattern, pattern),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT username, nick_name, remark, alias FROM contact "
+                "WHERE COALESCE(username, '') <> '' "
+                "ORDER BY COALESCE(NULLIF(remark, ''), NULLIF(nick_name, ''), username)"
+            ).fetchall()
+    finally:
+        connection.close()
+    contacts = []
+    seen = set()
+    for row in rows:
+        username = row['username']
+        if not username or username in seen:
+            continue
+        seen.add(username)
+        contacts.append({
+            'username': username,
+            'nick_name': row['nick_name'] or '',
+            'remark': row['remark'] or '',
+            'alias': row['alias'] or '',
+            'category': classify_contact_username(username),
+        })
+    return contacts
+
+def _contact_window_runtime():
+    try:
+        result = bridge_request('contact_window_status', timeout=3)
+        return result.get('result') if result.get('ok') else None
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 def refresh_gateway():
     global gateway_server
@@ -326,6 +382,55 @@ def login_required(f):
                 return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
+
+@app.route('/api/contact-windows', methods=['GET', 'POST'])
+@login_required
+def api_contact_windows():
+    try:
+        if request.method == 'GET':
+            contacts = _contact_window_contacts(request.args.get('q', '').strip())
+            bot_running = bot_status()['status'] == 'running'
+            runtime = _contact_window_runtime() if bot_running else None
+            configured = load_contact_window_usernames()
+            return jsonify(
+                contacts=contacts,
+                usernames=configured,
+                runtime=runtime,
+                bot_running=bot_running,
+                pending_restart=(runtime is not None and set(runtime.get('configured_usernames', [])) != set(configured)),
+            )
+
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify(error='联系人列表格式无效'), 400
+        usernames = data.get('usernames')
+        if not isinstance(usernames, list) or any(not isinstance(value, str) for value in usernames):
+            return jsonify(error='联系人列表格式无效'), 400
+        usernames = list(dict.fromkeys(value.strip() for value in usernames if value.strip()))
+        contacts = _contact_window_contacts()
+        known_usernames = {contact['username'] for contact in contacts}
+        if not set(usernames) <= known_usernames:
+            return jsonify(error='联系人列表包含当前微信通讯录中不存在的 username'), 400
+        save_contact_window_usernames(usernames)
+        bot_running = bot_status()['status'] == 'running'
+        runtime = _contact_window_runtime() if bot_running else None
+        return jsonify(
+            usernames=usernames,
+            runtime=runtime,
+            bot_running=bot_running,
+            runtime_available=runtime is not None,
+            pending_restart=(runtime is not None and set(runtime.get('configured_usernames', [])) != set(usernames)),
+        )
+    except (OSError, RuntimeError, sqlite3.Error) as exc:
+        app.logger.error('联系人独立窗口配置读取/保存失败: %s', exc)
+        return jsonify(error='联系人数据库或配置文件不可用'), 503
+
+@app.route('/api/contact-windows/runtime', methods=['GET'])
+@login_required
+def api_contact_windows_runtime():
+    bot_running = bot_status()['status'] == 'running'
+    runtime = _contact_window_runtime() if bot_running else None
+    return jsonify(bot_running=bot_running, runtime=runtime)
 
 @app.route('/webhook/settings', methods=['GET','POST'])
 @login_required
@@ -404,7 +509,7 @@ def start_bot():
         if getattr(sys, 'frozen', False):
             cmd = [sys.executable, '--bot']
         elif os.path.exists(bot_py):
-            cmd = ['python', bot_py]
+            cmd = [sys.executable, bot_py]
         elif os.path.exists(bot_exe):
             cmd = [bot_exe]
         else:

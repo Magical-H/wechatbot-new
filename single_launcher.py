@@ -5,6 +5,10 @@ import sys
 import importlib.util
 import shutil
 
+for stream in (sys.stdout, sys.stderr):
+    if stream is not None:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+
 
 APP_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
 if APP_DIR not in sys.path:

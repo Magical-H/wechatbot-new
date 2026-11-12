@@ -28,6 +28,7 @@ wxbot —— 兼容层
 """
 
 import glob
+import ctypes
 import logging
 import os
 import re
@@ -45,7 +46,8 @@ from wechatauto.wx import Chat as _BaseChat
 from wechatauto import MediaDownloader
 from wechatauto.moment import MomentDB
 from wechatauto.param import WxResponse
-from wechatauto import wxlog
+from wechatauto import uilock, wxlog
+from contact_window_config import load_contact_window_usernames
 
 log = logging.getLogger("wxbot")
 
@@ -873,6 +875,12 @@ class WeChat(_BaseWeChat):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._main_hwnd = self._gui.main_hwnd
+        self._wechat_pid = getattr(self._gui, "pid", None) or self._gui._get_pid(self._main_hwnd)
+        self._contact_windows = set(load_contact_window_usernames())
+        self._contact_window_names = {username: self._display_name(username) for username in self._contact_windows}
+        self._bound_window_handles = {}
+        self._contact_window_status = {username: "not_bound" for username in self._contact_windows}
         self._media = MediaDownloader(self._db)
         self._recall_guard = None
         self._moment_db_cache = None
@@ -947,13 +955,13 @@ class WeChat(_BaseWeChat):
             return "filehelper"
         for _ in range(5):
             try:
+                matches = set()
                 for hit in self._db.search_contact(nickname):
-                    if nickname in (hit.get("nick_name"), hit.get("remark")):
-                        return hit["username"]
+                    if nickname in (hit.get("nick_name"), hit.get("remark"), hit.get("username")):
+                        matches.add(hit["username"])
                 alias_rows = self._exact_alias_rows(nickname)
-                if alias_rows and len(alias_rows) == 1:
-                    return alias_rows[0]["username"]
-                return None
+                matches.update(row["username"] for row in alias_rows or [])
+                return next(iter(matches)) if len(matches) == 1 else None
             except (sqlite3.DatabaseError, sqlite3.OperationalError) as e:
                 log.warning("数据库暂不可用(解析联系人): %s", e)
                 time.sleep(1.5)
@@ -1288,17 +1296,177 @@ class WeChat(_BaseWeChat):
             pass
         return who
 
-    def SendMsg(self, msg, who=None, **kwargs):
-        return super().SendMsg(msg, who=self._display_name(who), **kwargs)
+    def _window_is_live(self, hwnd):
+        return bool(
+            hwnd
+            and hwnd != self._main_hwnd
+            and ctypes.windll.user32.IsWindow(hwnd)
+            and self._gui._get_pid(hwnd) == self._wechat_pid
+        )
 
-    def SendFiles(self, filepath, who=None, **kwargs):
-        who = self._display_name(who)
-        if isinstance(filepath, str) and filepath.lower().endswith(_IMG_EXTS):
+    def _window_is_operable(self, hwnd):
+        if not self._window_is_live(hwnd):
+            return False
+        user32 = ctypes.windll.user32
+        if user32.IsIconic(hwnd) or not user32.IsWindowVisible(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE，也会恢复隐藏的顶层窗口
+        return bool(user32.IsWindow(hwnd) and user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd))
+
+    def _chat_window_username(self, hwnd):
+        if not self._window_is_operable(hwnd) or not self._gui.use_window(hwnd):
+            return None
+        uia = self._gui._get_uia()
+        if uia is None or not uia.ensure_window(wake=False) or uia.window_kind() != "chat":
+            return None
+        window = uia._win
+        if int(window.NativeWindowHandle) != int(hwnd):
+            return None
+        automation_id = str(window.AutomationId or "")
+        prefix = "ChatSingleWindow"
+        return automation_id[len(prefix):] if automation_id.startswith(prefix) else None
+
+    def _find_contact_window(self, username):
+        for window in self._list_top_windows():
+            hwnd = int(window["hwnd"])
+            if hwnd != self._main_hwnd and window.get("cls", "").startswith("Qt"):
+                if self._chat_window_username(hwnd) == username:
+                    return hwnd
+        return None
+
+    def _restore_main_window(self):
+        try:
+            hwnd = self._main_hwnd
+            user32 = ctypes.windll.user32
+            if not hwnd or not user32.IsWindow(hwnd) or self._gui._get_pid(hwnd) != self._wechat_pid:
+                return False
+            if user32.IsIconic(hwnd) or not user32.IsWindowVisible(hwnd):
+                user32.ShowWindow(hwnd, 9)
+            if not user32.IsWindowVisible(hwnd):
+                user32.ShowWindow(hwnd, 5)  # SW_SHOW
+            if not self._gui.use_window(hwnd):
+                return False
+            brought_to_front = self._gui.bring_to_front(keep_topmost=False)
+            return bool(
+                brought_to_front and self._gui.main_hwnd == hwnd
+                and user32.IsWindow(hwnd) and user32.IsWindowVisible(hwnd)
+                and not user32.IsIconic(hwnd)
+            )
+        except Exception as exc:
+            log.warning("恢复微信主窗口失败: %s", exc)
+            return False
+
+    def _main_window_matches(self, username):
+        try:
+            if not self._restore_main_window():
+                return False
+            uia = self._gui._get_uia()
+            if uia is None or not uia.ensure_window(wake=False) or uia.window_kind() != "main":
+                return False
+            current_name = uia.current_chat()
+            return bool(current_name and self._resolve_uname(current_name) == username)
+        except Exception as exc:
+            log.warning("无法核验微信主窗口当前会话(%s): %s", username, exc)
+            return False
+
+    def _get_bound_window(self, username, auto_rebind):
+        hwnd = self._bound_window_handles.get(username)
+        if hwnd:
             try:
-                return self._gui.send_image(filepath, who)
-            except Exception as e:
-                log.warning("send_image 失败，回退为文件发送: %s", e)
-        return super().SendFiles(filepath, who=who, **kwargs)
+                if self._chat_window_username(hwnd) == username:
+                    self._contact_window_status[username] = "bound"
+                    return hwnd
+            except Exception as exc:
+                log.warning("验证已绑定联系人窗口失败(%s): %s", username, exc)
+        if hwnd:
+            self._bound_window_handles.pop(username, None)
+            self._contact_window_status[username] = "stale"
+        if not auto_rebind:
+            return None
+
+        self._restore_main_window()
+        try:
+            hwnd = self._find_contact_window(username)
+            if not hwnd:
+                self._restore_main_window()
+                try:
+                    # This dependency keys session_item_ AutomationIds by visible name, not username.
+                    self.ChatWindow(self._display_name(username))
+                except Exception as exc:
+                    log.warning("打开联系人独立窗口失败(%s): %s", username, exc)
+                hwnd = self._find_contact_window(username)
+            if hwnd and self._chat_window_username(hwnd) == username:
+                self._bound_window_handles[username] = hwnd
+                self._contact_window_status[username] = "bound"
+                return hwnd
+        except Exception as exc:
+            log.warning("绑定联系人独立窗口失败(%s): %s", username, exc)
+        self._contact_window_status[username] = "binding_failed"
+        self._restore_main_window()
+        return None
+
+    def _send_with_contact_window(self, who, use_bound_window, auto_rebind, send):
+        if use_bound_window is False:
+            return send(who, False)
+        username = self._resolve_uname(who) if who else None
+        configured_names = getattr(self, "_contact_window_names", {})
+        configured_contacts = getattr(self, "_contact_windows", set())
+        name_matches = {key for key, name in configured_names.items() if who and name == who}
+        configured = who in configured_contacts or username in configured_contacts or bool(name_matches)
+        should_bind = use_bound_window is True or (use_bound_window is None and configured)
+        if not should_bind:
+            return send(who, False)
+        if username is None and len(name_matches) == 1:
+            username = next(iter(name_matches))
+        if not username:
+            return WxResponse.failure("无法确认联系人 username，已阻止发送")
+
+        hwnd = self._get_bound_window(username, auto_rebind)
+        if hwnd:
+            try:
+                return send(username, True)
+            finally:
+                if not self._restore_main_window():
+                    log.error("发送后未能确认微信主窗口可操作(hwnd=%s)", self._main_hwnd)
+
+        if self._main_window_matches(username):
+            self._contact_window_status[username] = "main_fallback"
+            try:
+                return send(username, True)
+            finally:
+                if not self._restore_main_window():
+                    log.error("主窗口回退发送后恢复失败(hwnd=%s)", self._main_hwnd)
+        return WxResponse.failure("未能验证联系人独立窗口或主窗口会话，已阻止发送")
+
+    @uilock
+    def SendMsg(self, msg, who=None, use_bound_window=None, auto_rebind=True, **kwargs):
+        def send(target, canonical):
+            target = target if canonical else self._display_name(target)
+            return super(WeChat, self).SendMsg(msg, who=target, **kwargs)
+
+        return self._send_with_contact_window(who, use_bound_window, auto_rebind, send)
+
+    @uilock
+    def SendFiles(self, filepath, who=None, use_bound_window=None, auto_rebind=True, **kwargs):
+        def send(target, canonical):
+            target = target if canonical else self._display_name(target)
+            if isinstance(filepath, str) and filepath.lower().endswith(_IMG_EXTS):
+                try:
+                    return self._gui.send_image(filepath, target)
+                except Exception as e:
+                    log.warning("send_image 失败，回退为文件发送: %s", e)
+            return super(WeChat, self).SendFiles(filepath, who=target, **kwargs)
+
+        return self._send_with_contact_window(who, use_bound_window, auto_rebind, send)
+
+    @uilock
+    def get_contact_window_status(self):
+        runtime = {}
+        for username, status in self._contact_window_status.items():
+            hwnd = self._bound_window_handles.get(username)
+            if status == "bound" and hwnd and not self._window_is_live(hwnd):
+                status = "stale"
+            runtime[username] = {"status": status}
+        return {"configured_usernames": sorted(self._contact_windows), "contacts": runtime}
 
     # ----------------------------------------------------------- 会话/窗口
 

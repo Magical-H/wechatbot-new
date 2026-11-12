@@ -376,6 +376,14 @@ def webhook_test():
     else: ok = bridge_call('text', target, text)
     return (jsonify(status='sent'), 200) if ok else (jsonify(error='发送失败'), 502)
 
+@app.route('/webhook/open-chat', methods=['POST'])
+@login_required
+def webhook_open_chat():
+    target = request.form.get('target', '').strip()
+    if not target: return jsonify(error='请填写目标联系人'), 400
+    ok = bridge_call('open', target, '')
+    return (jsonify(status='opened'), 200) if ok else (jsonify(error='打开会话失败'), 502)
+
 @app.route('/start_bot', methods=['POST'])
 def start_bot():
     global bot_process

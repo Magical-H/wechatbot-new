@@ -876,6 +876,7 @@ class WeChat(_BaseWeChat):
         self._media = MediaDownloader(self._db)
         self._recall_guard = None
         self._moment_db_cache = None
+        self._install_alias_search()
 
     # ------------------------------------------------------------- 消息监听
 
@@ -941,7 +942,7 @@ class WeChat(_BaseWeChat):
         return WxResponse.failure("监听失败: %s" % nickname)
 
     def _resolve_uname(self, nickname):
-        """昵称 -> username；数据库瞬时不可用时重试。找不到返回 None。"""
+        """按昵称、备注或完整微信号解析 username；数据库瞬时不可用时重试。"""
         if nickname in ("filehelper", "文件传输助手"):
             return "filehelper"
         for _ in range(5):
@@ -949,11 +950,327 @@ class WeChat(_BaseWeChat):
                 for hit in self._db.search_contact(nickname):
                     if nickname in (hit.get("nick_name"), hit.get("remark")):
                         return hit["username"]
+                alias_rows = self._exact_alias_rows(nickname)
+                if alias_rows and len(alias_rows) == 1:
+                    return alias_rows[0]["username"]
                 return None
             except (sqlite3.DatabaseError, sqlite3.OperationalError) as e:
-                log.warning("数据库暂不可用(解析昵称): %s", e)
+                log.warning("数据库暂不可用(解析联系人): %s", e)
                 time.sleep(1.5)
         return None
+
+    def _exact_alias_rows(self, alias):
+        """读取微信号完全相等的联系人；数据库不可用时返回 None。"""
+        contact_conn = getattr(self._db, "_contact_conn", None)
+        if not isinstance(alias, str) or not alias or not callable(contact_conn):
+            return []
+        conn = contact_conn()
+        if conn is None:
+            return None
+        try:
+            rows = conn.execute(
+                "SELECT username, nick_name, remark, alias FROM contact "
+                "WHERE alias = ? LIMIT 2",
+                (alias,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.DatabaseError:
+            return None
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _is_wechat_id_candidate(value):
+        return bool(
+            isinstance(value, str)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{5,31}", value)
+        )
+
+    def _exact_contact_hit(self, name):
+        try:
+            return next(
+                (
+                    hit
+                    for hit in self._db.search_contact(name)
+                    if name in (hit.get("nick_name"), hit.get("remark"), hit.get("username"))
+                ),
+                None,
+            )
+        except (sqlite3.DatabaseError, sqlite3.OperationalError):
+            return None
+
+    def _install_alias_search(self):
+        """把微信号确认挂到本实例原有的 UIA 搜索接口上。"""
+        gui = self._gui
+        get_uia = gui._get_uia
+
+        def get_uia_with_alias_search(*args, **kwargs):
+            uia = get_uia(*args, **kwargs)
+            if uia is not None and not getattr(uia, "_wechatbot_alias_search", False):
+                self._install_uia_alias_search(uia)
+            return uia
+
+        gui._get_uia = get_uia_with_alias_search
+        open_chat = gui.open_chat
+        get_input_box = gui.get_input_box
+
+        def get_input_box_after_alias_failure():
+            if getattr(gui, "_wechatbot_alias_open_failed", False):
+                gui._wechatbot_alias_open_failed = False
+                return None
+            return get_input_box()
+
+        gui.get_input_box = get_input_box_after_alias_failure
+
+        def open_chat_with_alias(name, exact=False):
+            gui._wechatbot_alias_open_failed = False
+            if not self._is_wechat_id_candidate(name):
+                return open_chat(name, exact=exact)
+            contacts = self._exact_alias_rows(name)
+            if contacts is None:
+                gui._wechatbot_alias_open_failed = True
+                return False
+            if not contacts:
+                if not self._exact_contact_hit(name):
+                    gui._wechatbot_alias_open_failed = True
+                    return False
+                opened = bool(open_chat(name, exact=exact))
+                gui._wechatbot_alias_open_failed = not opened
+                return opened
+            if len(contacts) != 1:
+                gui._wechatbot_alias_open_failed = True
+                return False
+            uia = gui._get_uia()
+            if uia is None:
+                gui._wechatbot_alias_open_failed = True
+                return False
+            uia._wechatbot_alias_target = contacts[0]
+            try:
+                opened = bool(uia.open_chat(name))
+                if opened:
+                    gui._current_chat = name
+                gui._wechatbot_alias_open_failed = not opened
+                return bool(opened)
+            finally:
+                uia._wechatbot_alias_target = None
+                uia._wechatbot_alias_candidate = False
+                uia._wechatbot_alias_verified_by_id = False
+                uia._wechatbot_alias_conflict = False
+
+        gui.open_chat = open_chat_with_alias
+
+    def _install_uia_alias_search(self, uia):
+        from wechatauto.uia_driver import RESULT_AID_PREFIX
+
+        collect_results = uia._collect_results
+
+        def collect_results_with_alias(keyword, settle=1.5):
+            results = collect_results(keyword, settle=settle)
+            target = getattr(uia, "_wechatbot_alias_target", None)
+            if target is None:
+                return results
+
+            names = {value for value in (target.get("nick_name"), target.get("remark")) if value}
+            aids = {RESULT_AID_PREFIX + value for value in names}
+            local_rows = [
+                row for row in results
+                if row.get("section") in ("联系人", "最常使用", "最近使用")
+            ]
+            if keyword == target.get("alias"):
+                candidates = [row for row in local_rows if not aids or row.get("aid") in aids]
+                labeled = []
+                for row in candidates:
+                    ids = self._labeled_wechat_ids(self._uia_control_text(row["cell"]))
+                    if ids:
+                        if set(ids) == {target["alias"]}:
+                            labeled.append(row)
+                if labeled:
+                    result = self._one_alias_candidate(uia, labeled, verified_by_id=True)
+                    if not result:
+                        uia._wechatbot_alias_conflict = True
+                    return result
+                if any(
+                    self._labeled_wechat_ids(self._uia_control_text(row["cell"]))
+                    for row in candidates
+                ):
+                    uia._wechatbot_alias_conflict = True
+                    return []
+                ocr_rows = []
+                ocr_conflict = False
+                for row in candidates:
+                    ids = self._ocr_alias_row(row["cell"], target["alias"])
+                    if ids and set(ids) == {target["alias"]}:
+                        ocr_rows.append(row)
+                    elif ids:
+                        ocr_conflict = True
+                if ocr_rows:
+                    result = self._one_alias_candidate(uia, ocr_rows, verified_by_id=True)
+                    if not result:
+                        uia._wechatbot_alias_conflict = True
+                    return result
+                if ocr_conflict:
+                    uia._wechatbot_alias_conflict = True
+                return []
+
+            if keyword in names:
+                if getattr(uia, "_wechatbot_alias_conflict", False):
+                    return []
+                matches = [row for row in local_rows if row.get("aid") in aids]
+                return self._one_alias_candidate(uia, matches)
+            return []
+
+        uia._collect_results = collect_results_with_alias
+        open_chat = uia.open_chat
+
+        def open_chat_with_alias(keyword, index=None, section=None, retries=2):
+            target = getattr(uia, "_wechatbot_alias_target", None)
+            owns_target = target is None and self._is_wechat_id_candidate(keyword)
+            if owns_target:
+                contacts = self._exact_alias_rows(keyword)
+                if contacts is None or len(contacts) > 1:
+                    return False
+                target = contacts[0] if contacts else None
+                if target is None and not self._exact_contact_hit(keyword):
+                    return False
+            if target is None:
+                return open_chat(keyword, index=index, section=section, retries=retries)
+
+            uia._wechatbot_alias_target = target
+            uia._wechatbot_alias_candidate = False
+            uia._wechatbot_alias_verified_by_id = False
+            uia._wechatbot_alias_conflict = False
+            try:
+                opened = open_chat(keyword, index=index, section=section, retries=retries)
+                if opened:
+                    if (
+                        uia._wechatbot_alias_candidate
+                        and not uia._wechatbot_alias_verified_by_id
+                        and not self._main_chat_matches_contact(uia, target)
+                    ):
+                        return False
+                    self._gui._current_chat = target.get("alias") or keyword
+                    return True
+                if (
+                    uia._wechatbot_alias_candidate
+                    and self._main_chat_matches_contact(uia, target)
+                ):
+                    self._gui._current_chat = target.get("alias") or keyword
+                    return True
+                return False
+            finally:
+                if owns_target:
+                    uia._wechatbot_alias_target = None
+                    uia._wechatbot_alias_candidate = False
+                    uia._wechatbot_alias_verified_by_id = False
+                    uia._wechatbot_alias_conflict = False
+
+        uia.open_chat = open_chat_with_alias
+        uia._wechatbot_alias_search = True
+
+    @staticmethod
+    def _one_alias_candidate(uia, rows, verified_by_id=False):
+        if len(rows) != 1:
+            return []
+        uia._wechatbot_alias_candidate = True
+        uia._wechatbot_alias_verified_by_id = verified_by_id
+        return rows
+
+    @staticmethod
+    def _labeled_wechat_ids(text):
+        if not text:
+            return []
+        return re.findall(
+            r"(?:微信号|WeChat\s*ID)\s*[:：]\s*([A-Za-z0-9_-]+)(?![A-Za-z0-9_-])",
+            str(text),
+            re.IGNORECASE,
+        )
+
+    @staticmethod
+    def _uia_control_text(control):
+        texts = []
+        pending = [(control, 0)]
+        visited = 0
+        while pending and visited < 80:
+            current, depth = pending.pop()
+            visited += 1
+            for getter in ("Name", "LegacyIAccessible"):
+                try:
+                    value = getattr(current, getter)
+                    if getter == "LegacyIAccessible" and value is not None:
+                        value = value.Name
+                    if value:
+                        texts.append(str(value))
+                except Exception:
+                    pass
+            for getter in ("GetValuePattern", "GetTextPattern"):
+                try:
+                    pattern = getattr(current, getter)()
+                    if pattern is None:
+                        continue
+                    value = pattern.Value if getter == "GetValuePattern" else pattern.DocumentRange.GetText(-1)
+                    if value:
+                        texts.append(str(value))
+                except Exception:
+                    pass
+            if depth < 4:
+                try:
+                    pending.extend((child, depth + 1) for child in current.GetChildren())
+                except Exception:
+                    pass
+        return "\n".join(texts)
+
+    def _ocr_alias_row(self, row, alias):
+        try:
+            rect = row.BoundingRectangle
+            gui = self._gui
+            gui._update_render_rect()
+            x0 = max(0, int(rect.left - gui.origin_x))
+            y0 = max(0, int(rect.top - gui.origin_y))
+            x1 = min(int(gui.render_w), int(rect.right - gui.origin_x))
+            y1 = min(int(gui.render_h), int(rect.bottom - gui.origin_y))
+            width, height = x1 - x0, y1 - y0
+            if width <= 30 or height <= 16:
+                return False
+            text_x0 = x0 + max(16, round(width * 0.0725))
+            text_x1 = min(x1, text_x0 + min(width - 30, max(165, 105 + 6 * len(alias))))
+            text_y0 = y0 + max(8, round(height * 0.26))
+            text_y1 = min(y1, y0 + max(round(height * 0.86), round(height * 0.26) + 16))
+            if text_x1 <= text_x0 or text_y1 <= text_y0:
+                return False
+            result = gui.ocr_zoomed((text_x0, text_y0, text_x1, text_y1), scale=4)
+            text = "\n".join(str(item[0]) for item in result if item and item[0])
+            return self._labeled_wechat_ids(text)
+        except Exception as e:
+            log.debug("OCR 读取微信号搜索结果失败: %s", e)
+            return []
+
+    def _main_chat_matches_contact(self, uia, contact):
+        if (
+            uia is None
+            or self._gui._window_kind(uia) != "main"
+            or uia._find_search_list(timeout=0.25) is not None
+        ):
+            return False
+        chat_input = uia._chat_input()
+        current_name = getattr(chat_input, "Name", None)
+        if not current_name or current_name not in (contact.get("nick_name"), contact.get("remark")):
+            return False
+        conn = self._db._contact_conn()
+        if conn is None:
+            return False
+        try:
+            matches = conn.execute(
+                "SELECT username FROM contact WHERE nick_name = ? OR remark = ? LIMIT 2",
+                (current_name, current_name),
+            ).fetchall()
+            return (
+                len(matches) == 1
+                and dict(matches[0]).get("username") == contact.get("username")
+            )
+        except sqlite3.DatabaseError:
+            return False
+        finally:
+            conn.close()
 
     # --------------------------------------------------------------- 发送
 

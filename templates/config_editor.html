@@ -3762,12 +3762,13 @@ document.getElementById('oneKeyDiagnosticButton').addEventListener('click', asyn
       <label><input id="webhookEnabled" type="checkbox">启用 API 网关</label>
       <button type="button" onclick="webhookSave({enabled:document.getElementById('webhookEnabled').checked,port:Number(document.getElementById('webhookPort').value),lan:document.getElementById('webhookLan').checked})">保存网关设置</button>
       <h2>主动发送测试</h2>
-      <form id="webhookTestForm" enctype="multipart/form-data"><label>目标联系人 <input name="target" required></label><br><label>文本 <textarea name="text"></textarea></label><br><label>图片文件 <input name="image" type="file" accept="image/*"></label><br><label>或图片 URL <input name="image_url" type="url"></label><br><button>发送测试</button></form>
+      <form id="webhookTestForm" enctype="multipart/form-data"><label>目标联系人 <input id="webhookTarget" name="target" required></label><br><label>文本 <textarea name="text"></textarea></label><br><label>图片文件 <input name="image" type="file" accept="image/*"></label><br><label>或图片 URL <input name="image_url" type="url"></label><br><button type="button" id="webhookOpenChat">打开会话</button> <button>发送测试</button></form>
       <pre id="webhookResult"></pre>
     </section>
     <script>
     async function webhookLoad(){const r=await fetch('/webhook/settings');if(!r.ok)return;const d=await r.json();document.getElementById('webhookToken').value=d.token||'';document.getElementById('webhookEnabled').checked=!!d.enabled;document.getElementById('webhookPort').value=d.port||5001;document.getElementById('webhookLan').checked=d.lan!==false}
     async function webhookSave(data){const r=await fetch('/webhook/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const d=await r.json();document.getElementById('webhookResult').textContent=d.error||'设置已保存';if(r.ok)webhookLoad()}
+    document.getElementById('webhookOpenChat').addEventListener('click',async()=>{const data=new FormData();data.set('target',document.getElementById('webhookTarget').value);const r=await fetch('/webhook/open-chat',{method:'POST',body:data});document.getElementById('webhookResult').textContent=JSON.stringify(await r.json())});
     document.getElementById('webhookTestForm').addEventListener('submit',async e=>{e.preventDefault();const r=await fetch('/webhook/test',{method:'POST',body:new FormData(e.target)});document.getElementById('webhookResult').textContent=JSON.stringify(await r.json())});webhookLoad();
     </script>
     <div id="sidebarOverlay"></div>
